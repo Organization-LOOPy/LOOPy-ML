@@ -1,0 +1,33 @@
+# .gitignore
+
+venv/
+env/
+.venv/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# AI 모델
+models/
+*.bin
+*.safetensors
+*.onnx
+
+# 데이터 폴더
+data/
+logs/
+
+.env
+
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*.swo
+
+.DS_Store
+Thumbs.db

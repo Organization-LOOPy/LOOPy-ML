@@ -30,23 +30,29 @@ def fetch_trends(state: GState) -> GState:
         state.menus = get_trending_menu_info()[:3]
         state.features = get_popular_cafe_features()[:3]
         state.logs.append("trends:fetched")
-    except Exception:
-        state.logs.append("trends:failed")
+    except Exception as e:
+        state.logs.append(f"trends:failed:{e}")
+        state.menus = [{"menu": "데이터 없음"}]
+        state.features = [{"feature": "데이터 없음"}]
     return state
 
 def synthesize_and_store(state: GState) -> GState:
-    state.report = synthesize_monthly_insight(
-        state.indicators,
-        state.menus,
-        state.features,
-    )
-    save_report_to_s3(
-        cafe_id=state.cafeId,
-        period=state.report["period"],
-        payload=state.report,
-        overwrite=state.overwrite
-    )
-    state.logs.append("report:stored")
+    try:
+        state.report = synthesize_monthly_insight(
+            indicators=state.indicators or {},
+            menus=state.menus or [],
+            features=state.features or [],
+        )
+        save_report_to_s3(
+            cafe_id=state.cafeId,
+            period=state.report["period"],
+            payload=state.report,
+            overwrite=state.overwrite
+        )
+        state.logs.append("report:stored")
+    except Exception as e:
+        state.logs.append(f"report:failed:{e}")
+        state.report = {"error": str(e)}
     return state
 
 def build_graph():
@@ -56,7 +62,14 @@ def build_graph():
     g.add_node("synthesize_and_store", synthesize_and_store)
 
     g.set_entry_point("fetch_indicators")
-    g.add_edge("fetch_indicators", "fetch_trends")
+
+    def has_indicators(state: GState) -> bool:
+        return bool(state.indicators)
+
+    g.add_edge("fetch_indicators", "fetch_trends", condition=has_indicators)
+    g.add_edge("fetch_indicators", END, condition=lambda s: not has_indicators(s))
+
     g.add_edge("fetch_trends", "synthesize_and_store")
     g.add_edge("synthesize_and_store", END)
+
     return g.compile()

@@ -1,16 +1,23 @@
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta, timezone, date
 from pyathena import connect
+from botocore.exceptions import BotoCoreError, ClientError
 import os
 
 KST = timezone(timedelta(hours=9))
 ATHENA_DB = os.getenv("ATHENA_DB", "cafe_analytics")
+
 def _conn():
-    return connect(
-        s3_staging_dir=os.getenv("ATHENA_STAGING_DIR"),
-        region_name=os.getenv("AWS_REGION"),
-        work_group=os.getenv("ATHENA_WORKGROUP", "primary"),
-    )
+    try:
+        return connect(
+            s3_staging_dir=os.getenv("ATHENA_STAGING_DIR"),
+            region_name=os.getenv("AWS_REGION", "ap-northeast-2"),
+            work_group=os.getenv("ATHENA_WORKGROUP", "primary"),
+        )
+    except Exception as e:
+        # Athena 연결 자체가 안되면 바로 fallback
+        print(f"❌ Athena connection failed: {e}")
+        return None
 
 def prev_month_range(ref_dt: Optional[datetime] = None) -> Tuple[date, date]:
     ref_dt = ref_dt or datetime.now(KST)
@@ -22,6 +29,10 @@ def prev_month_range(ref_dt: Optional[datetime] = None) -> Tuple[date, date]:
     return start, end
 
 def fetch_monthly_metrics(cafe_id: int, ref_dt: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    전달 기준 월간 KPI 조회
+    실패하면 빈 KPI를 반환 (서비스는 죽지 않음)
+    """
     start, end = prev_month_range(ref_dt) 
     start_dt = start.strftime("%Y-%m-%d")
     end_dt = end.strftime("%Y-%m-%d")
@@ -89,17 +100,41 @@ def fetch_monthly_metrics(cafe_id: int, ref_dt: Optional[datetime] = None) -> Di
       (SELECT joined FROM chg) AS challenge_join;
     """
 
-    with _conn().cursor() as cur:
-        cur.execute(q)
-        row = cur.fetchone()
-
-    return {
+    # 안전한 기본값 (Athena 실패 시 반환)
+    default_metrics = {
         "month": f"{start.year}-{start.month:02d}",
         "kpis": {
-            "visits": int(row[0] or 0),
-            "newCustomers": int(row[1] or 0),
-            "revisitRate": float(row[2] or 0.0),
-            "couponUseRate": float(row[3] or 0.0),
-            "challengeJoin": int(row[4] or 0),
+            "visits": 0,
+            "newCustomers": 0,
+            "revisitRate": 0.0,
+            "couponUseRate": 0.0,
+            "challengeJoin": 0,
         },
     }
+
+    try:
+        conn = _conn()
+        if conn is None:
+            return default_metrics
+
+        with conn.cursor() as cur:
+            cur.execute(q)
+            row = cur.fetchone()
+
+        if not row:
+            print(f"⚠️ No data returned for cafe_id={cafe_id}")
+            return default_metrics
+
+        return {
+            "month": f"{start.year}-{start.month:02d}",
+            "kpis": {
+                "visits": int(row[0] or 0),
+                "newCustomers": int(row[1] or 0),
+                "revisitRate": float(row[2] or 0.0),
+                "couponUseRate": float(row[3] or 0.0),
+                "challengeJoin": int(row[4] or 0),
+            },
+        }
+    except (ClientError, BotoCoreError, Exception) as e:
+        print(f"❌ Athena query failed: {e}")
+        return default_metrics
